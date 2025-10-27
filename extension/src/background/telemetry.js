@@ -105,8 +105,10 @@ async function getLocalIpAddress() {
 
   try {
     const interfaces = await getNetworkInterfaces();
-    const prioritized = interfaces.find((iface) => Boolean(iface.address) && !iface.address.startsWith('127.'));
-    return prioritized ? prioritized.address : interfaces[0]?.address ?? null;
+    const prioritized = interfaces.find(
+      (iface) => Boolean(iface.address) && !iface.address.startsWith('127.')
+    );
+    return prioritized ? prioritized.address : (interfaces[0]?.address ?? null);
   } catch (error) {
     console.warn('Failed to read network interfaces:', error);
     return null;
@@ -151,16 +153,23 @@ async function setLastTelemetryCheckin(timestamp) {
 }
 
 export async function collectDeviceTelemetry() {
-  const [assetTag, serialNumber, directoryDeviceId, currentUser, osVersion, localIpAddress, lastCheckinTime] =
-    await Promise.all([
-      getAssetTag(),
-      getSerialNumber(),
-      getDirectoryDeviceId(),
-      getDeviceUser(),
-      getOsVersion(),
-      getLocalIpAddress(),
-      getLastTelemetryCheckin(),
-    ]);
+  const [
+    assetTag,
+    serialNumber,
+    directoryDeviceId,
+    currentUser,
+    osVersion,
+    localIpAddress,
+    lastCheckinTime
+  ] = await Promise.all([
+    getAssetTag(),
+    getSerialNumber(),
+    getDirectoryDeviceId(),
+    getDeviceUser(),
+    getOsVersion(),
+    getLocalIpAddress(),
+    getLastTelemetryCheckin()
+  ]);
 
   return {
     assetTag,
@@ -169,7 +178,7 @@ export async function collectDeviceTelemetry() {
     currentUser,
     localIpAddress,
     osVersion,
-    lastCheckinTime,
+    lastCheckinTime
   };
 }
 
@@ -190,7 +199,10 @@ export async function pushDeviceTelemetry() {
 }
 
 export function scheduleRecurringTelemetryPush() {
-  chrome.alarms.create(TELEMETRY_ALARM_NAME, { periodInMinutes: TELEMETRY_PUSH_INTERVAL_MINUTES, delayInMinutes: 1 });
+  chrome.alarms.create(TELEMETRY_ALARM_NAME, {
+    periodInMinutes: TELEMETRY_PUSH_INTERVAL_MINUTES,
+    delayInMinutes: 1
+  });
 }
 
 export function handleTelemetryAlarms(alarm) {
