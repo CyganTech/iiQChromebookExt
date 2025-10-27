@@ -1,23 +1,231 @@
 :root {
   color-scheme: light dark;
   font-family: 'Roboto', 'Segoe UI', sans-serif;
+  font-size: 16px;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
   min-width: 320px;
-  padding: 1.2rem;
-  background: #0f172a;
-  color: #f1f5f9;
+  background: radial-gradient(circle at top, #1e293b, #0f172a 55%);
+  color: #f8fafc;
+  padding: 1rem;
 }
 
-h1 {
-  font-size: 1.2rem;
-  margin-bottom: 0.5rem;
+.popup {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  width: min(360px, 100%);
 }
 
-.status {
-  display: block;
-  margin-top: 0.75rem;
-  opacity: 0.85;
+.popup__header {
+  text-align: left;
+}
+
+.popup__title {
+  margin: 0 0 0.25rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.popup__subtitle {
+  margin: 0;
+  font-size: 0.85rem;
+  color: rgba(241, 245, 249, 0.8);
+}
+
+.card {
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 16px;
+  padding: 1rem;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.4);
+  display: flex;
+  gap: 0.75rem;
+}
+
+.status-card {
+  align-items: center;
+}
+
+.status-card__indicator {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #cbd5f5;
+  box-shadow: 0 0 12px rgba(203, 213, 245, 0.6);
+  flex-shrink: 0;
+}
+
+.status-card[data-health='healthy'] .status-card__indicator {
+  background: #4ade80;
+  box-shadow: 0 0 12px rgba(74, 222, 128, 0.75);
+}
+
+.status-card[data-health='degraded'] .status-card__indicator {
+  background: #facc15;
+  box-shadow: 0 0 12px rgba(250, 204, 21, 0.75);
+}
+
+.status-card[data-health='error'] .status-card__indicator {
+  background: #f87171;
+  box-shadow: 0 0 12px rgba(248, 113, 113, 0.75);
+}
+
+.status-card__content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.status-card__heading {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.status-card__meta {
+  margin: 0;
+  font-size: 0.8rem;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.ticket-card {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ticket-card__content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.ticket-card__title {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.ticket-card__description {
+  margin: 0;
+  font-size: 0.85rem;
+  color: rgba(226, 232, 240, 0.8);
+}
+
+.ticket-card__cta {
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #38bdf8, #6366f1);
+  color: #0f172a;
+  font-weight: 600;
+  font-size: 0.95rem;
+  padding: 0.65rem 1.25rem;
+  cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  min-width: 140px;
+}
+
+.ticket-card__cta:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  box-shadow: none;
+}
+
+.ticket-card__cta:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 20px rgba(99, 102, 241, 0.4);
+}
+
+.shortcut-card {
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.shortcut-card__title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.shortcut-card__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.shortcut-card__item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  background: rgba(30, 41, 59, 0.75);
+  border-radius: 12px;
+  padding: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.shortcut-card__link {
+  color: #38bdf8;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.shortcut-card__description {
+  margin: 0;
+  font-size: 0.75rem;
+  color: rgba(226, 232, 240, 0.75);
+}
+
+.feedback {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+}
+
+.feedback__message {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.feedback__retry {
+  align-self: flex-start;
+  border: none;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.1);
+  color: #f8fafc;
+  padding: 0.4rem 0.9rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: background 0.18s ease;
+}
+
+.feedback__retry:hover {
+  background: rgba(248, 250, 252, 0.18);
+}
+
+@media (max-width: 360px) {
+  body {
+    padding: 0.75rem;
+  }
+
+  .ticket-card {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+  }
+
+  .ticket-card__cta {
+    width: 100%;
+  }
 }

@@ -7,10 +7,38 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main id="app">
-      <h1>iiQ Chromebook Companion</h1>
-      <p>This popup will surface device status and provide quick ticket submission.</p>
+    <main id="app" class="popup" data-role="app">
+      <header class="popup__header">
+        <h1 class="popup__title">iiQ Chromebook Companion</h1>
+        <p class="popup__subtitle">Stay up to date with device health and submit support tickets in seconds.</p>
+      </header>
+
+      <section class="card status-card" data-role="status-card" data-health="unknown">
+        <span class="status-card__indicator" aria-hidden="true" data-role="status-indicator"></span>
+        <div class="status-card__content">
+          <p class="status-card__heading" data-role="status-message">Checking device health…</p>
+          <p class="status-card__meta" data-role="status-meta">Last sync —</p>
+        </div>
+      </section>
+
+      <section class="card ticket-card" data-role="ticket-card">
+        <div class="ticket-card__content">
+          <h2 class="ticket-card__title">Need help?</h2>
+          <p class="ticket-card__description" data-role="ticket-description">Open an iiQ ticket with your device details.</p>
+        </div>
+        <button type="button" class="ticket-card__cta" data-role="primary-action" disabled>Submit Ticket</button>
+      </section>
+
+      <section class="card shortcut-card" data-role="shortcut-section" hidden>
+        <h3 class="shortcut-card__title">Quick Links</h3>
+        <ul class="shortcut-card__list" data-role="shortcut-list"></ul>
+      </section>
+
+      <div class="feedback" data-role="feedback" hidden>
+        <p class="feedback__message" data-role="feedback-message"></p>
+        <button type="button" class="feedback__retry" data-role="retry-button">Try Again</button>
+      </div>
     </main>
-    <script src="popup.js"></script>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>
