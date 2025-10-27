@@ -1,9 +1,389 @@
 const TELEMETRY_ALARM_NAME = 'iiq-telemetry-sync';
-const TELEMETRY_PUSH_INTERVAL_MINUTES = 60;
+const DEFAULT_TELEMETRY_PUSH_INTERVAL_MINUTES = 60;
+const RETRY_DELAY_MINUTES = 5;
+const MIN_DELAY_MINUTES = 1;
+const MAX_API_RETRY_ATTEMPTS = 3;
+const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+const INITIAL_BACKOFF_DELAY_MS = 1000;
+const MAX_BACKOFF_DELAY_MS = 30000;
+const TOKEN_SAFETY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
 let pipelineInitialized = false;
 
 const deviceAttributes = chrome?.enterprise?.deviceAttributes;
+
+let cachedIdentityToken = null;
+let cachedIdentityTokenExpiry = 0;
+let cachedIdentityTokenSource = null;
+
+function getExtensionVersion() {
+  try {
+    return chrome?.runtime?.getManifest?.()?.version ?? '0.0.0';
+  } catch (error) {
+    console.warn('Unable to determine extension version for telemetry header:', error);
+    return '0.0.0';
+  }
+}
+
+function generateRequestId() {
+  if (typeof crypto?.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function serializeError(error) {
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      name: error.name,
+      stack: error.stack,
+    };
+  }
+
+  if (typeof error === 'object' && error !== null) {
+    return { ...error };
+  }
+
+  return { message: String(error) };
+}
+
+async function callManagedStorageGet(keys) {
+  if (!chrome?.storage?.managed?.get) {
+    return {};
+  }
+
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.storage.managed.get(keys, (items) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+
+        resolve(items || {});
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+async function setLocalStorageEntries(entries) {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.storage.local.set(entries, () => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+
+        resolve();
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+async function getTelemetrySettings() {
+  const defaults = {
+    apiBaseUrl: null,
+    telemetryEndpoint: 'devices/telemetry',
+    intervalMinutes: DEFAULT_TELEMETRY_PUSH_INTERVAL_MINUTES,
+    timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    apiKey: null,
+    staticBearerToken: null,
+    tokenLifetimeMinutes: 60,
+    oauthScopes: [],
+  };
+
+  try {
+    const managed = await callManagedStorageGet(null);
+    const baseUrlFromTenant = managed?.iiqTenantSubdomain
+      ? `https://${managed.iiqTenantSubdomain}.incidentiq.com/api/v1/`
+      : null;
+
+    const timeoutMs = Number.parseInt(managed?.iiqTelemetryTimeoutMs, 10);
+    const intervalMinutes = Number.parseInt(managed?.iiqTelemetryIntervalMinutes, 10);
+    const tokenLifetimeMinutes = Number.parseInt(managed?.iiqTokenLifetimeMinutes, 10);
+    let oauthScopes = [];
+
+    if (Array.isArray(managed?.iiqOAuthScopes)) {
+      oauthScopes = managed.iiqOAuthScopes.filter((scope) => typeof scope === 'string' && scope.trim().length > 0);
+    } else if (typeof managed?.iiqOAuthScopes === 'string') {
+      oauthScopes = managed.iiqOAuthScopes
+        .split(',')
+        .map((scope) => scope.trim())
+        .filter((scope) => scope.length > 0);
+    }
+
+    return {
+      ...defaults,
+      apiBaseUrl: managed?.iiqApiBaseUrl ?? baseUrlFromTenant ?? defaults.apiBaseUrl,
+      telemetryEndpoint: managed?.iiqTelemetryEndpoint ?? defaults.telemetryEndpoint,
+      intervalMinutes: Number.isFinite(intervalMinutes) && intervalMinutes > 0 ? intervalMinutes : defaults.intervalMinutes,
+      timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : defaults.timeoutMs,
+      apiKey: typeof managed?.iiqApiKey === 'string' && managed.iiqApiKey.trim().length > 0 ? managed.iiqApiKey : null,
+      staticBearerToken:
+        typeof managed?.iiqServiceToken === 'string' && managed.iiqServiceToken.trim().length > 0
+          ? managed.iiqServiceToken
+          : null,
+      tokenLifetimeMinutes:
+        Number.isFinite(tokenLifetimeMinutes) && tokenLifetimeMinutes > 0
+          ? tokenLifetimeMinutes
+          : defaults.tokenLifetimeMinutes,
+      oauthScopes,
+    };
+  } catch (error) {
+    console.warn('Unable to read managed telemetry settings; falling back to defaults:', error);
+    return defaults;
+  }
+}
+
+async function getTelemetryIntervalMinutes() {
+  const settings = await getTelemetrySettings();
+  return settings.intervalMinutes;
+}
+
+async function acquireIdentityToken({ forceRefresh = false, scopes = [] } = {}) {
+  if (!chrome?.identity?.getAuthToken) {
+    return null;
+  }
+
+  if (forceRefresh && cachedIdentityToken && chrome?.identity?.removeCachedAuthToken) {
+    try {
+      await new Promise((resolve) => {
+        chrome.identity.removeCachedAuthToken({ token: cachedIdentityToken }, () => {
+          resolve();
+        });
+      });
+    } catch (error) {
+      console.warn('Failed to clear cached OAuth token before refresh:', error);
+    }
+  }
+
+  return new Promise((resolve) => {
+    try {
+      chrome.identity.getAuthToken({ interactive: false, scopes }, (token) => {
+        if (chrome.runtime.lastError) {
+          console.warn('Unable to obtain iiQ OAuth token:', chrome.runtime.lastError.message);
+          resolve(null);
+          return;
+        }
+
+        resolve(token ?? null);
+      });
+    } catch (error) {
+      console.warn('Unexpected error while requesting iiQ OAuth token:', error);
+      resolve(null);
+    }
+  });
+}
+
+async function resolveAuthHeaders({ forceRefresh = false } = {}) {
+  const settings = await getTelemetrySettings();
+
+  if (settings.apiKey) {
+    return { headers: { 'x-api-key': settings.apiKey }, settings };
+  }
+
+  if (settings.staticBearerToken) {
+    cachedIdentityToken = settings.staticBearerToken;
+    cachedIdentityTokenSource = 'managed';
+    cachedIdentityTokenExpiry = settings.tokenLifetimeMinutes
+      ? Date.now() + settings.tokenLifetimeMinutes * 60 * 1000 - TOKEN_SAFETY_WINDOW_MS
+      : Number.POSITIVE_INFINITY;
+    return { headers: { Authorization: `Bearer ${cachedIdentityToken}` }, settings };
+  }
+
+  const now = Date.now();
+  if (!forceRefresh && cachedIdentityToken && cachedIdentityTokenSource === 'identity' && now < cachedIdentityTokenExpiry) {
+    return { headers: { Authorization: `Bearer ${cachedIdentityToken}` }, settings };
+  }
+
+  const token = await acquireIdentityToken({ forceRefresh, scopes: settings.oauthScopes });
+  if (!token) {
+    throw new Error('Unable to resolve iiQ credentials');
+  }
+
+  cachedIdentityToken = token;
+  cachedIdentityTokenSource = 'identity';
+  cachedIdentityTokenExpiry = now + settings.tokenLifetimeMinutes * 60 * 1000 - TOKEN_SAFETY_WINDOW_MS;
+
+  return { headers: { Authorization: `Bearer ${cachedIdentityToken}` }, settings };
+}
+
+async function invalidateCredentials() {
+  if (cachedIdentityTokenSource === 'identity' && cachedIdentityToken && chrome?.identity?.removeCachedAuthToken) {
+    try {
+      await new Promise((resolve) => {
+        chrome.identity.removeCachedAuthToken({ token: cachedIdentityToken }, () => {
+          resolve();
+        });
+      });
+    } catch (error) {
+      console.warn('Failed to remove cached OAuth token:', error);
+    }
+  }
+
+  cachedIdentityToken = null;
+  cachedIdentityTokenExpiry = 0;
+  cachedIdentityTokenSource = null;
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const requestOptions = { ...options, signal: controller.signal };
+
+  try {
+    const response = await fetch(url, requestOptions);
+    clearTimeout(timer);
+    return response;
+  } catch (error) {
+    clearTimeout(timer);
+    if (error?.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
+}
+
+function isRetryableStatus(status) {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+async function readResponseBody(response) {
+  const clone = response.clone();
+  const contentType = clone.headers.get('content-type');
+
+  try {
+    if (contentType && contentType.includes('application/json')) {
+      return await clone.json();
+    }
+    return await clone.text();
+  } catch (error) {
+    console.warn('Unable to parse iiQ response body:', error);
+    return null;
+  }
+}
+
+async function persistTelemetryResponse(summary) {
+  try {
+    await setLocalStorageEntries({ lastTelemetryResponse: summary, lastTelemetryError: null });
+  } catch (error) {
+    console.warn('Unable to persist telemetry response snapshot:', error);
+  }
+}
+
+async function persistTelemetryError(errorSummary) {
+  try {
+    await setLocalStorageEntries({ lastTelemetryError: errorSummary });
+  } catch (error) {
+    console.warn('Unable to persist telemetry error snapshot:', error);
+  }
+}
+
+async function sendTelemetryToIiq(telemetry) {
+  const { headers: authHeaders, settings } = await resolveAuthHeaders();
+
+  if (!settings.apiBaseUrl) {
+    throw new Error('iiQ API base URL is not configured. Provide `iiqApiBaseUrl` or `iiqTenantSubdomain` via policy.');
+  }
+
+  const endpoint = settings.telemetryEndpoint || 'devices/telemetry';
+  const url = new URL(endpoint, settings.apiBaseUrl).toString();
+  const requestId = generateRequestId();
+  const baseHeaders = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    'x-iiq-client': `chromebook-companion/${getExtensionVersion()}`,
+    'x-request-id': requestId,
+  };
+
+  let attempts = 0;
+  let backoffMs = INITIAL_BACKOFF_DELAY_MS;
+  let lastError = null;
+  let currentAuthHeaders = { ...authHeaders };
+
+  while (attempts < MAX_API_RETRY_ATTEMPTS) {
+    attempts += 1;
+    try {
+      const response = await fetchWithTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: { ...baseHeaders, ...currentAuthHeaders },
+          body: JSON.stringify(telemetry),
+        },
+        settings.timeoutMs || DEFAULT_REQUEST_TIMEOUT_MS,
+      );
+
+      const responseBody = await readResponseBody(response);
+
+      if (response.status === 401) {
+        lastError = new Error('iiQ rejected credentials with 401');
+        await invalidateCredentials();
+        if (attempts >= MAX_API_RETRY_ATTEMPTS) {
+          throw lastError;
+        }
+        ({ headers: currentAuthHeaders } = await resolveAuthHeaders({ forceRefresh: true }));
+        await delay(backoffMs);
+        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_DELAY_MS);
+        continue;
+      }
+
+      if (isRetryableStatus(response.status) && attempts < MAX_API_RETRY_ATTEMPTS) {
+        lastError = new Error(`Retryable iiQ status ${response.status}`);
+        const retryAfterHeader = response.headers.get('retry-after');
+        if (retryAfterHeader) {
+          const retryAfterSeconds = Number.parseInt(retryAfterHeader, 10);
+          if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+            backoffMs = Math.min(retryAfterSeconds * 1000, MAX_BACKOFF_DELAY_MS);
+          }
+        }
+        await delay(backoffMs);
+        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_DELAY_MS);
+        continue;
+      }
+
+      return {
+        status: response.status,
+        ok: response.ok,
+        body: responseBody,
+        requestId: response.headers.get('x-request-id') ?? requestId,
+        traceId: response.headers.get('x-trace-id') ?? null,
+        attempts,
+        recommendedDelayMinutes:
+          typeof responseBody?.nextRecommendedCheckMinutes === 'number'
+            ? responseBody.nextRecommendedCheckMinutes
+            : null,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      await invalidateCredentials();
+      if (attempts >= MAX_API_RETRY_ATTEMPTS) {
+        throw lastError;
+      }
+
+      try {
+        ({ headers: currentAuthHeaders } = await resolveAuthHeaders({ forceRefresh: true }));
+      } catch (authError) {
+        throw authError;
+      }
+
+      await delay(backoffMs);
+      backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_DELAY_MS);
+    }
+  }
+
+  throw lastError ?? new Error('Unknown error transmitting telemetry to iiQ');
+}
 
 function isDeviceAttributesAvailable() {
   return Boolean(deviceAttributes);
@@ -166,6 +546,7 @@ export async function collectDeviceTelemetry() {
     assetTag,
     serialNumber,
     deviceId: directoryDeviceId,
+    directoryDeviceId,
     currentUser,
     localIpAddress,
     osVersion,
@@ -173,24 +554,77 @@ export async function collectDeviceTelemetry() {
   };
 }
 
-async function transmitTelemetryToIiq(telemetry) {
-  // TODO: Replace with authenticated request to iiQ backend once API contract is available.
-  console.log('Preparing to transmit telemetry payload to iiQ:', telemetry);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  console.log('Telemetry payload logged for future transmission.');
-}
-
 export async function pushDeviceTelemetry() {
   const telemetry = await collectDeviceTelemetry();
   const timestamp = new Date().toISOString();
   telemetry.lastCheckinTime = timestamp;
 
-  await transmitTelemetryToIiq(telemetry);
-  await setLastTelemetryCheckin(timestamp);
+  try {
+    const responseSummary = await sendTelemetryToIiq({
+      serialNumber: telemetry.serialNumber,
+      assetTag: telemetry.assetTag,
+      directoryDeviceId: telemetry.directoryDeviceId ?? telemetry.deviceId,
+      currentUser: telemetry.currentUser,
+      osVersion: telemetry.osVersion,
+      localIp: telemetry.localIpAddress,
+      lastCheckinTime: telemetry.lastCheckinTime,
+    });
+
+    await setLastTelemetryCheckin(timestamp);
+    await persistTelemetryResponse({
+      ...responseSummary,
+      timestamp,
+    });
+
+    console.info('iiQ telemetry push completed', {
+      event: 'telemetry_push',
+      level: 'info',
+      status: responseSummary.status,
+      ok: responseSummary.ok,
+      attempts: responseSummary.attempts,
+      requestId: responseSummary.requestId,
+      traceId: responseSummary.traceId,
+      timestamp,
+    });
+
+    return responseSummary;
+  } catch (error) {
+    const serialized = { ...serializeError(error), timestamp };
+    console.error('iiQ telemetry push failed', {
+      event: 'telemetry_push',
+      level: 'error',
+      error: serialized,
+    });
+    await persistTelemetryError(serialized);
+    throw error;
+  }
+}
+
+async function scheduleNextTelemetryPush({ recommendedDelayMinutes = null, retry = false } = {}) {
+  try {
+    const managedInterval = await getTelemetryIntervalMinutes();
+    let delayMinutes = recommendedDelayMinutes ?? managedInterval ?? DEFAULT_TELEMETRY_PUSH_INTERVAL_MINUTES;
+
+    if (retry) {
+      delayMinutes = Math.min(delayMinutes, RETRY_DELAY_MINUTES);
+    }
+
+    if (!Number.isFinite(delayMinutes) || delayMinutes <= 0) {
+      delayMinutes = DEFAULT_TELEMETRY_PUSH_INTERVAL_MINUTES;
+    }
+
+    delayMinutes = Math.max(delayMinutes, MIN_DELAY_MINUTES);
+
+    chrome.alarms.create(TELEMETRY_ALARM_NAME, { delayInMinutes: delayMinutes });
+  } catch (error) {
+    console.error('Failed to schedule next telemetry push:', error);
+  }
 }
 
 export function scheduleRecurringTelemetryPush() {
-  chrome.alarms.create(TELEMETRY_ALARM_NAME, { periodInMinutes: TELEMETRY_PUSH_INTERVAL_MINUTES, delayInMinutes: 1 });
+  scheduleNextTelemetryPush().catch((error) => {
+    console.error('Unable to prime telemetry schedule:', error);
+  });
 }
 
 export function handleTelemetryAlarms(alarm) {
@@ -198,9 +632,14 @@ export function handleTelemetryAlarms(alarm) {
     return;
   }
 
-  pushDeviceTelemetry().catch((error) => {
-    console.error('Device telemetry push failed:', error);
-  });
+  pushDeviceTelemetry()
+    .then((responseSummary) => {
+      scheduleNextTelemetryPush({ recommendedDelayMinutes: responseSummary?.recommendedDelayMinutes });
+    })
+    .catch((error) => {
+      console.error('Device telemetry push failed:', error);
+      scheduleNextTelemetryPush({ retry: true });
+    });
 }
 
 export function initializeTelemetryPipeline() {
@@ -209,9 +648,12 @@ export function initializeTelemetryPipeline() {
   }
 
   pipelineInitialized = true;
-  pushDeviceTelemetry().catch((error) => {
-    console.error('Initial telemetry push failed:', error);
-  });
-
-  scheduleRecurringTelemetryPush();
+  pushDeviceTelemetry()
+    .then((responseSummary) => {
+      scheduleNextTelemetryPush({ recommendedDelayMinutes: responseSummary?.recommendedDelayMinutes });
+    })
+    .catch((error) => {
+      console.error('Initial telemetry push failed:', error);
+      scheduleNextTelemetryPush({ retry: true });
+    });
 }
