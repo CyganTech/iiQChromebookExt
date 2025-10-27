@@ -4,11 +4,248 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>iiQ Chromebook Companion Settings</title>
+    <style>
+      :root {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        color: #1f2933;
+        background-color: #f8fafc;
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+      }
+
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 24px 64px;
+      }
+
+      h1 {
+        font-size: 1.75rem;
+        margin-bottom: 0.25rem;
+      }
+
+      p.page-lede {
+        margin-top: 0;
+        margin-bottom: 1.5rem;
+        color: #52606d;
+      }
+
+      form {
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 15px 35px rgba(15, 23, 42, 0.08);
+        padding: 24px;
+        display: grid;
+        gap: 24px;
+      }
+
+      fieldset {
+        border: none;
+        padding: 0;
+        margin: 0;
+      }
+
+      legend {
+        font-weight: 600;
+        margin-bottom: 0.75rem;
+      }
+
+      label {
+        display: block;
+        font-weight: 500;
+        margin-bottom: 0.5rem;
+      }
+
+      input[type='url'],
+      input[type='text'],
+      input[type='number'] {
+        width: 100%;
+        padding: 0.6rem 0.75rem;
+        border-radius: 8px;
+        border: 1px solid #cbd2d9;
+        font-size: 1rem;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      input:focus {
+        outline: none;
+        border-color: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+      }
+
+      .input-description {
+        font-size: 0.9rem;
+        color: #6b7280;
+        margin-top: 0.35rem;
+      }
+
+      .radio-row {
+        display: flex;
+        gap: 1.5rem;
+        flex-wrap: wrap;
+      }
+
+      .radio-option {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-weight: 500;
+      }
+
+      .auth-secret {
+        display: none;
+        border-top: 1px solid #e4e7eb;
+        padding-top: 1rem;
+      }
+
+      .auth-secret.visible {
+        display: block;
+      }
+
+      .managed-indicator {
+        display: none;
+        margin-top: 0.25rem;
+        font-size: 0.85rem;
+        color: #b43403;
+      }
+
+      .managed-indicator.visible {
+        display: block;
+      }
+
+      .status-banner {
+        border-radius: 10px;
+        padding: 0.75rem 1rem;
+        font-size: 0.95rem;
+        background-color: #f1f5f9;
+        color: #1f2933;
+        display: none;
+      }
+
+      .status-banner.visible {
+        display: block;
+      }
+
+      .status-banner.error {
+        background-color: #fee2e2;
+        color: #991b1b;
+      }
+
+      .status-banner.success {
+        background-color: #dcfce7;
+        color: #166534;
+      }
+
+      button[type='submit'] {
+        border: none;
+        background-color: #2563eb;
+        color: #fff;
+        font-weight: 600;
+        padding: 0.75rem 1.5rem;
+        border-radius: 999px;
+        cursor: pointer;
+        align-self: flex-start;
+        transition: background-color 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      button[type='submit']:hover {
+        background-color: #1d4ed8;
+        box-shadow: 0 10px 25px rgba(37, 99, 235, 0.3);
+      }
+
+      button[type='submit']:disabled {
+        background-color: #94a3b8;
+        cursor: not-allowed;
+        box-shadow: none;
+      }
+
+      @media (max-width: 640px) {
+        main {
+          padding: 24px 16px 48px;
+        }
+
+        form {
+          padding: 20px;
+        }
+      }
+    </style>
   </head>
   <body>
     <main>
       <h1>iiQ Chromebook Companion Settings</h1>
-      <p>Configure incidentIQ tenant details and authentication.</p>
+      <p class="page-lede">Configure incidentIQ tenant details, credentials, and telemetry cadence.</p>
+
+      <div id="status-banner" class="status-banner" role="alert" aria-live="polite"></div>
+
+      <form id="settings-form" novalidate>
+        <fieldset>
+          <legend>Tenant</legend>
+          <label for="tenant-url">Tenant URL</label>
+          <input
+            id="tenant-url"
+            name="tenant-url"
+            type="url"
+            placeholder="https://district.incidentiq.com"
+            autocomplete="off"
+            required
+            inputmode="url"
+          />
+          <p class="input-description">Must be an HTTPS URL to your district's incidentIQ tenant.</p>
+          <p id="tenant-managed" class="managed-indicator">Managed by your administrator.</p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Authentication</legend>
+          <div class="radio-row" role="radiogroup" aria-label="Authentication mode">
+            <label class="radio-option">
+              <input type="radio" name="auth-mode" value="apiKey" checked />
+              API Key
+            </label>
+            <label class="radio-option">
+              <input type="radio" name="auth-mode" value="oauth" />
+              OAuth Client
+            </label>
+          </div>
+          <p id="auth-managed" class="managed-indicator">Managed by your administrator.</p>
+
+          <div id="api-key-group" class="auth-secret">
+            <label for="api-key">API Key</label>
+            <input id="api-key" name="api-key" type="text" autocomplete="off" spellcheck="false" />
+            <p class="input-description">Paste the scoped incidentIQ API key issued for telemetry.</p>
+            <p id="api-key-managed" class="managed-indicator">Managed by your administrator.</p>
+          </div>
+
+          <div id="oauth-group" class="auth-secret">
+            <label for="oauth-client-id">OAuth Client ID</label>
+            <input id="oauth-client-id" name="oauth-client-id" type="text" autocomplete="off" spellcheck="false" />
+            <p class="input-description">Enter the OAuth client ID configured for this extension.</p>
+            <p id="oauth-managed" class="managed-indicator">Managed by your administrator.</p>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Telemetry Sync</legend>
+          <label for="sync-interval">Sync Interval (minutes)</label>
+          <input
+            id="sync-interval"
+            name="sync-interval"
+            type="number"
+            min="5"
+            max="1440"
+            step="1"
+            required
+          />
+          <p class="input-description">Determines how often telemetry is sent to incidentIQ. Minimum of 5 minutes.</p>
+          <p id="interval-managed" class="managed-indicator">Managed by your administrator.</p>
+        </fieldset>
+
+        <button id="save-button" type="submit">Save settings</button>
+      </form>
     </main>
+
+    <script type="module" src="./options.js"></script>
   </body>
 </html>

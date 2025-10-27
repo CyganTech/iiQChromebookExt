@@ -47,6 +47,28 @@ function readManagedStorage() {
   });
 }
 
+function readSyncStorage() {
+  return new Promise((resolve, reject) => {
+    if (!chrome?.storage?.sync?.get) {
+      resolve({});
+      return;
+    }
+
+    try {
+      chrome.storage.sync.get(null, (items) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+
+        resolve(items || {});
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 function coerceIsoTimestamp(value) {
   if (!value) {
     return null;
@@ -239,17 +261,19 @@ function serializeError(error) {
 }
 
 async function buildPopupContext() {
-  const [device, localStorage, managedSettings] = await Promise.all([
+  const [device, localStorage, managedSettings, syncSettings] = await Promise.all([
     collectDeviceTelemetry(),
     readLocalStorage(['lastTelemetryResponse', 'lastTelemetryError']),
     readManagedStorage(),
+    readSyncStorage(),
   ]);
 
   const lastResponse = localStorage.lastTelemetryResponse ?? null;
   const lastError = localStorage.lastTelemetryError ?? null;
   const deviceStatus = summarizeDeviceHealth({ lastResponse, lastError });
 
-  const tenantBaseUrl = deriveTenantBaseUrl(managedSettings);
+  const layeredSettings = { ...syncSettings, ...managedSettings };
+  const tenantBaseUrl = deriveTenantBaseUrl(layeredSettings);
   const ticketShortcuts = buildTicketShortcuts({ baseUrl: tenantBaseUrl, device });
 
   /**

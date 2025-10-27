@@ -10,6 +10,26 @@ const TOKEN_SAFETY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
 let pipelineInitialized = false;
 
+export const TELEMETRY_CONFIGURATION_KEYS = new Set([
+  'iiqTenantUrl',
+  'iiqTenantSubdomain',
+  'iiqHelpdeskUrl',
+  'iiqHelpdeskBaseUrl',
+  'iiqPortalUrl',
+  'iiqApiBaseUrl',
+  'iiqTelemetryIntervalMinutes',
+  'iiqTelemetryTimeoutMs',
+  'iiqTelemetryEndpoint',
+  'iiqAuthMode',
+  'iiqApiKey',
+  'iiqOAuthClientId',
+  'iiqOAuthScopes',
+  'iiqOAuthAudience',
+  'iiqServiceToken',
+  'iiqStaticBearerToken',
+  'iiqTokenLifetimeMinutes',
+]);
+
 const deviceAttributes = chrome?.enterprise?.deviceAttributes;
 
 let cachedIdentityToken = null;
@@ -73,6 +93,90 @@ async function callManagedStorageGet(keys) {
   });
 }
 
+async function callSyncStorageGet(keys) {
+  if (!chrome?.storage?.sync?.get) {
+    return {};
+  }
+
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.storage.sync.get(keys, (items) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+
+        resolve(items || {});
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+function normalizeTenantCandidate(candidate) {
+  if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+    return null;
+  }
+
+  try {
+    const url = new URL(candidate.trim());
+    if (!url.protocol.startsWith('http')) {
+      return null;
+    }
+
+    const normalizedPath = url.pathname.replace(/\/?$/, '');
+    return `${url.protocol}//${url.host}${normalizedPath}`;
+  } catch (error) {
+    return null;
+  }
+}
+
+function deriveTenantBaseUrlFromSettings(values) {
+  const candidateKeys = ['iiqTenantUrl', 'iiqHelpdeskUrl', 'iiqHelpdeskBaseUrl', 'iiqPortalUrl'];
+
+  for (const key of candidateKeys) {
+    const normalized = normalizeTenantCandidate(values?.[key]);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  if (typeof values?.iiqTenantSubdomain === 'string' && values.iiqTenantSubdomain.trim().length > 0) {
+    const subdomain = values.iiqTenantSubdomain.trim().replace(/\.$/, '');
+    return `https://${subdomain}.incidentiq.com`;
+  }
+
+  return null;
+}
+
+function buildApiBaseUrlFromTenant(tenantUrl) {
+  if (!tenantUrl) {
+    return null;
+  }
+
+  try {
+    const base = tenantUrl.endsWith('/') ? tenantUrl : `${tenantUrl}/`;
+    const apiUrl = new URL('api/v1/', base);
+    return apiUrl.href;
+  } catch (error) {
+    return null;
+  }
+}
+
+function normalizeApiBaseUrl(candidate) {
+  if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+    return null;
+  }
+
+  try {
+    const url = new URL(candidate.trim());
+    return url.href.endsWith('/') ? url.href : `${url.href}/`;
+  } catch (error) {
+    return null;
+  }
+}
+
 async function setLocalStorageEntries(entries) {
   return new Promise((resolve, reject) => {
     try {
@@ -100,47 +204,81 @@ async function getTelemetrySettings() {
     staticBearerToken: null,
     tokenLifetimeMinutes: 60,
     oauthScopes: [],
+    authMode: 'apiKey',
   };
 
   try {
-    const managed = await callManagedStorageGet(null);
-    const baseUrlFromTenant = managed?.iiqTenantSubdomain
-      ? `https://${managed.iiqTenantSubdomain}.incidentiq.com/api/v1/`
-      : null;
+    const [managed, sync] = await Promise.all([callManagedStorageGet(null), callSyncStorageGet(null)]);
+    const combined = { ...sync, ...managed };
 
-    const timeoutMs = Number.parseInt(managed?.iiqTelemetryTimeoutMs, 10);
-    const intervalMinutes = Number.parseInt(managed?.iiqTelemetryIntervalMinutes, 10);
-    const tokenLifetimeMinutes = Number.parseInt(managed?.iiqTokenLifetimeMinutes, 10);
+    const tenantBaseUrl = deriveTenantBaseUrlFromSettings(combined);
+    const apiBaseUrl =
+      normalizeApiBaseUrl(combined?.iiqApiBaseUrl) ?? buildApiBaseUrlFromTenant(tenantBaseUrl) ?? defaults.apiBaseUrl;
+
+    const telemetryEndpoint =
+      typeof combined?.iiqTelemetryEndpoint === 'string' && combined.iiqTelemetryEndpoint.trim().length > 0
+        ? combined.iiqTelemetryEndpoint.trim()
+        : defaults.telemetryEndpoint;
+
+    const timeoutMs = Number.parseInt(combined?.iiqTelemetryTimeoutMs, 10);
+    const intervalMinutes = Number.parseInt(combined?.iiqTelemetryIntervalMinutes, 10);
+    const tokenLifetimeMinutes = Number.parseInt(combined?.iiqTokenLifetimeMinutes, 10);
+
     let oauthScopes = [];
-
-    if (Array.isArray(managed?.iiqOAuthScopes)) {
-      oauthScopes = managed.iiqOAuthScopes.filter((scope) => typeof scope === 'string' && scope.trim().length > 0);
-    } else if (typeof managed?.iiqOAuthScopes === 'string') {
-      oauthScopes = managed.iiqOAuthScopes
+    if (Array.isArray(combined?.iiqOAuthScopes)) {
+      oauthScopes = combined.iiqOAuthScopes.filter((scope) => typeof scope === 'string' && scope.trim().length > 0);
+    } else if (typeof combined?.iiqOAuthScopes === 'string') {
+      oauthScopes = combined.iiqOAuthScopes
         .split(',')
         .map((scope) => scope.trim())
         .filter((scope) => scope.length > 0);
     }
 
+    const apiKey =
+      typeof combined?.iiqApiKey === 'string' && combined.iiqApiKey.trim().length > 0
+        ? combined.iiqApiKey.trim()
+        : null;
+
+    const staticTokenCandidate =
+      typeof combined?.iiqServiceToken === 'string' && combined.iiqServiceToken.trim().length > 0
+        ? combined.iiqServiceToken.trim()
+        : typeof combined?.iiqStaticBearerToken === 'string' && combined.iiqStaticBearerToken.trim().length > 0
+        ? combined.iiqStaticBearerToken.trim()
+        : null;
+
+    const authModeCandidate =
+      typeof combined?.iiqAuthMode === 'string' && combined.iiqAuthMode.trim().length > 0
+        ? combined.iiqAuthMode.trim()
+        : null;
+
+    const normalizedAuthMode =
+      authModeCandidate === 'apiKey'
+        ? 'apiKey'
+        : authModeCandidate === 'oauth'
+        ? 'oauth'
+        : apiKey
+        ? 'apiKey'
+        : staticTokenCandidate
+        ? 'oauth'
+        : defaults.authMode;
+
+    const effectiveApiKey = normalizedAuthMode === 'apiKey' ? apiKey : null;
+
     return {
       ...defaults,
-      apiBaseUrl: managed?.iiqApiBaseUrl ?? baseUrlFromTenant ?? defaults.apiBaseUrl,
-      telemetryEndpoint: managed?.iiqTelemetryEndpoint ?? defaults.telemetryEndpoint,
+      apiBaseUrl,
+      telemetryEndpoint,
       intervalMinutes: Number.isFinite(intervalMinutes) && intervalMinutes > 0 ? intervalMinutes : defaults.intervalMinutes,
       timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : defaults.timeoutMs,
-      apiKey: typeof managed?.iiqApiKey === 'string' && managed.iiqApiKey.trim().length > 0 ? managed.iiqApiKey : null,
-      staticBearerToken:
-        typeof managed?.iiqServiceToken === 'string' && managed.iiqServiceToken.trim().length > 0
-          ? managed.iiqServiceToken
-          : null,
+      apiKey: effectiveApiKey,
+      staticBearerToken: staticTokenCandidate,
       tokenLifetimeMinutes:
-        Number.isFinite(tokenLifetimeMinutes) && tokenLifetimeMinutes > 0
-          ? tokenLifetimeMinutes
-          : defaults.tokenLifetimeMinutes,
+        Number.isFinite(tokenLifetimeMinutes) && tokenLifetimeMinutes > 0 ? tokenLifetimeMinutes : defaults.tokenLifetimeMinutes,
       oauthScopes,
+      authMode: normalizedAuthMode,
     };
   } catch (error) {
-    console.warn('Unable to read managed telemetry settings; falling back to defaults:', error);
+    console.warn('Unable to read telemetry settings; falling back to defaults:', error);
     return defaults;
   }
 }
@@ -234,6 +372,36 @@ async function invalidateCredentials() {
   cachedIdentityToken = null;
   cachedIdentityTokenExpiry = 0;
   cachedIdentityTokenSource = null;
+}
+
+export function resetTelemetryConfiguration() {
+  const finalize = () => {
+    pipelineInitialized = false;
+    initializeTelemetryPipeline();
+  };
+
+  const clearAlarm = () => {
+    try {
+      if (chrome?.alarms?.clear) {
+        chrome.alarms.clear(TELEMETRY_ALARM_NAME, () => {
+          finalize();
+        });
+        return;
+      }
+    } catch (error) {
+      console.warn('Failed to clear telemetry alarm during reset:', error);
+    }
+
+    finalize();
+  };
+
+  invalidateCredentials()
+    .catch((error) => {
+      console.warn('Unable to invalidate cached telemetry credentials during reset:', error);
+    })
+    .finally(() => {
+      clearAlarm();
+    });
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {
