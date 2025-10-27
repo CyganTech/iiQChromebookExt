@@ -32,6 +32,30 @@ Create a ChromeOS extension that keeps managed Chromebooks in sync with incident
 - **Options Page**: Admin configuration, authentication status, and log export tools.
 - **Storage**: Chrome `storage.managed` for admin-controlled defaults, `storage.sync` for per-user overrides, and `storage.local` for transient cache.
 
+## Settings Schema
+
+The options experience manages a consolidated configuration document stored under the following keys. When both managed and sync
+areas supply a value, the managed (policy-controlled) entry wins.
+
+| Key | Description | Validation | Notes |
+| --- | --- | --- | --- |
+| `iiqTenantUrl` | Fully qualified HTTPS base URL for the district's incidentIQ tenant (e.g., `https://district.incidentiq.com`). | Required HTTPS origin. Trailing slashes removed before persistence. | Auto-derived from legacy `iiqTenantSubdomain` when present. Used to build the REST API base path (`${tenant}/api/v1/`). |
+| `iiqTelemetryIntervalMinutes` | Interval (in minutes) between scheduled telemetry pushes. | Integer 5&ndash;1440 (defaults to `60`). | Drives the Chrome alarm cadence. |
+| `iiqAuthMode` | Indicates which credential type is active. | Enum: `apiKey` or `oauth`. | Guides the options UI and determines which secret is surfaced to the background worker. |
+| `iiqApiKey` | Scoped incidentIQ API key. | Required when `iiqAuthMode = 'apiKey'`; trimmed before persistence. | Cleared when switching to OAuth. |
+| `iiqOAuthClientId` | OAuth client identifier configured for the extension. | Required when `iiqAuthMode = 'oauth'`; trimmed before persistence. | Cleared when switching to API key mode. |
+
+### Storage Behaviour & Migration
+
+1. Attempt to persist to `chrome.storage.managed` when the API exposes a writable surface (useful for tests); otherwise fall back
+   to `chrome.storage.sync` for self-service configuration.
+2. On load the options module merges `chrome.storage.managed` and `chrome.storage.sync`, respecting managed overrides and flagging
+   fields that are policy locked so the UI can disable edits.
+3. Legacy keys (`iiqTenantSubdomain`, `iiqHelpdeskUrl`, etc.) are normalized into `iiqTenantUrl` during migration to keep older
+   builds compatible without data loss.
+4. Switching authentication modes automatically clears the inactive secret so that the background worker never attempts to use
+   stale credentials.
+
 ## Open Questions
 - Which iiQ API endpoints support device metadata updates and ticket prefilling?
 - What authentication mechanism (API key, OAuth client, service account) is supported in managed ChromeOS contexts?
