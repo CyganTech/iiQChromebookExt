@@ -37,6 +37,83 @@ Create a ChromeOS extension that keeps managed Chromebooks in sync with incident
 - What authentication mechanism (API key, OAuth client, service account) is supported in managed ChromeOS contexts?
 - How should the extension handle multiple users per device (shared carts vs 1:1)?
 
+## iiQ API Research Notes
+
+### Base URL & Versioning
+- All documented endpoints live under the tenant-specific host: `https://{subdomain}.incidentiq.com/api/v1/`.
+- The tenant subdomain is supplied by admins through managed policy (`iiqTenantSubdomain`).
+- Requests must include `Accept: application/json` and `Content-Type: application/json` headers.
+
+### Authentication Flow
+1. **Managed OAuth Client**
+   - Chrome admins push the OAuth client ID via `chrome.storage.managed` (`iiqOAuthClientId`).
+   - The extension requests a token with `chrome.identity.getAuthToken({ interactive: false })` scoped for `https://{subdomain}.incidentiq.com/.default`.
+   - Tokens are Bearer JWTs with a maximum lifetime of 60 minutes. They should be refreshed 5 minutes before expiry.
+2. **Fallback API Key**
+   - If OAuth is unavailable, admins can distribute a scoped API key via `iiqApiKey`.
+   - API keys are passed using the `x-api-key` header and do not expire automatically; rotation cadence is determined by admins.
+
+### Token Lifetimes & Refresh Strategy
+- OAuth access tokens: 60 minutes (`tokenLifetimeMinutes = 60` in policy). Refresh after 55 minutes or upon 401 responses.
+- Service tokens supplied through policy may include an explicit `tokenLifetimeMinutes` override; otherwise treat as non-expiring until policy changes.
+- Backoff strategy for refresh: retry after 5s, 15s, and 30s before surfacing an error to the user/logs.
+
+### Required Headers
+- `Authorization: Bearer {access_token}` (OAuth) **or** `x-api-key: {managed_api_key}`.
+- `Content-Type: application/json`
+- `Accept: application/json`
+- `x-iiq-client: chromebook-companion/{extensionVersion}` for telemetry attribution.
+- Optional correlation header `x-request-id` is echoed in responses for troubleshooting.
+
+### Device Telemetry Endpoint
+- **Path:** `devices/telemetry`
+- **Method:** `POST`
+- **Payload Contract:**
+  ```json
+  {
+    "serialNumber": "string",
+    "assetTag": "string",
+    "directoryDeviceId": "string",
+    "currentUser": "user@district.edu",
+    "osVersion": "ChromeOS 119.0.6045.192",
+    "localIp": "10.1.40.22",
+    "lastCheckinTime": "2023-11-18T14:22:51.013Z"
+  }
+  ```
+- **Successful Response:**
+  ```json
+  {
+    "ingestId": "f29c2a5c-3cb9-4a70-9f13-c993caa34f4b",
+    "processedAt": "2023-11-18T14:22:51.219Z",
+    "nextRecommendedCheckMinutes": 30
+  }
+  ```
+- **Error Response:**
+  ```json
+  {
+    "error": {
+      "code": "INVALID_DEVICE",
+      "message": "Directory device ID was not recognized",
+      "retryAfterMinutes": 5
+    }
+  }
+  ```
+
+### Token Introspection Endpoint (Optional)
+- **Path:** `auth/tokens/introspect`
+- **Method:** `POST`
+- Used only for debugging suspected credential issues. Requires the same auth headers.
+- Returns `{ "active": true, "exp": 1700314021 }` on success.
+
+### Rate Limits & Backoff
+- Soft limit: 120 requests per minute per tenant.
+- Hard limit: 1,000 requests per hour per tenant.
+- Recommended client-side backoff: exponential (`1s, 2s, 4s, …`) capped at 30s between retries.
+
+### Logging & Observability
+- The iiQ API returns `x-request-id` and `x-trace-id` headers. Persist these values with telemetry results for debugging.
+- Admins can query recent ingests via `GET devices/telemetry/{ingestId}` when provided the correlation identifiers.
+
 ## Next Steps
 1. Document iiQ API surface and authentication details.
 2. Define data contracts for device update payloads and ticket drafts.
