@@ -1,0 +1,23 @@
+:root {
+  color-scheme: light dark;
+  font-family: 'Roboto', 'Segoe UI', sans-serif;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  padding: 1.2rem;
+  background: #0f172a;
+  color: #f1f5f9;
+}
+
+h1 {
+  font-size: 1.2rem;
+  margin-bottom: 0.5rem;
+}
+
+.status {
+  display: block;
+  margin-top: 0.75rem;
+  opacity: 0.85;
+}

@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "iiQ Chromebook Companion",
+  "description": "Keeps ChromeOS devices in sync with incidentIQ and streamlines ticket submission.",
+  "version": "0.0.1",
+  "permissions": [
+    "identity",
+    "storage",
+    "scripting",
+    "activeTab",
+    "alarms"
+  ],
+  "background": {
+    "service_worker": "src/background/index.js"
+  },
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_title": "iiQ Chromebook Companion"
+  },
+  "icons": {
+    "16": "assets/icon16.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  },
+  "options_page": "src/options/index.html"
+}
