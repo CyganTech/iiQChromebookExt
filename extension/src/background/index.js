@@ -1,5 +1,15 @@
-// Background service worker for iiQ Chromebook Companion.
-// TODO: Implement device sync scheduling, authentication with incidentIQ, and
-// communication with content/popup scripts.
+import { handleTelemetryAlarms, initializeTelemetryPipeline } from './telemetry.js';
 
 console.log('iiQ Chromebook Companion background service worker initialized.');
+
+chrome.runtime.onInstalled.addListener(() => {
+  initializeTelemetryPipeline();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  initializeTelemetryPipeline();
+});
+
+chrome.alarms.onAlarm.addListener(handleTelemetryAlarms);
+
+initializeTelemetryPipeline();
