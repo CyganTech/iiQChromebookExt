@@ -1,3 +1,5 @@
+import { getEffectiveSettings } from '../options/options.js';
+
 const TELEMETRY_ALARM_NAME = 'iiq-telemetry-sync';
 const DEFAULT_TELEMETRY_PUSH_INTERVAL_MINUTES = 60;
 const RETRY_DELAY_MINUTES = 5;
@@ -15,6 +17,15 @@ const deviceAttributes = chrome?.enterprise?.deviceAttributes;
 let cachedIdentityToken = null;
 let cachedIdentityTokenExpiry = 0;
 let cachedIdentityTokenSource = null;
+
+function deriveApiBaseUrlFromTenant(tenantUrl) {
+  if (typeof tenantUrl !== 'string' || tenantUrl.trim().length === 0) {
+    return null;
+  }
+
+  const trimmed = tenantUrl.replace(/\/+$/, '');
+  return `${trimmed}/api/v1/`;
+}
 
 function getExtensionVersion() {
   try {
@@ -100,7 +111,39 @@ async function getTelemetrySettings() {
     staticBearerToken: null,
     tokenLifetimeMinutes: 60,
     oauthScopes: [],
+    oauthClientId: null,
+    authMethod: 'apiKey',
   };
+
+  const composed = { ...defaults };
+
+  try {
+    const optionSettings = await getEffectiveSettings();
+    if (optionSettings) {
+      const apiBase = deriveApiBaseUrlFromTenant(optionSettings.tenantUrl);
+      if (apiBase) {
+        composed.apiBaseUrl = apiBase;
+      }
+
+      if (Number.isFinite(optionSettings.syncIntervalMinutes) && optionSettings.syncIntervalMinutes > 0) {
+        composed.intervalMinutes = optionSettings.syncIntervalMinutes;
+      }
+
+      if (optionSettings.authMethod === 'apiKey' && optionSettings.apiKey) {
+        composed.apiKey = optionSettings.apiKey;
+      }
+
+      if (optionSettings.authMethod) {
+        composed.authMethod = optionSettings.authMethod;
+      }
+
+      if (optionSettings.oauthClientId) {
+        composed.oauthClientId = optionSettings.oauthClientId;
+      }
+    }
+  } catch (error) {
+    console.warn('Unable to load saved iiQ settings; continuing with defaults.', error);
+  }
 
   try {
     const managed = await callManagedStorageGet(null);
@@ -123,25 +166,28 @@ async function getTelemetrySettings() {
     }
 
     return {
-      ...defaults,
-      apiBaseUrl: managed?.iiqApiBaseUrl ?? baseUrlFromTenant ?? defaults.apiBaseUrl,
-      telemetryEndpoint: managed?.iiqTelemetryEndpoint ?? defaults.telemetryEndpoint,
-      intervalMinutes: Number.isFinite(intervalMinutes) && intervalMinutes > 0 ? intervalMinutes : defaults.intervalMinutes,
-      timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : defaults.timeoutMs,
-      apiKey: typeof managed?.iiqApiKey === 'string' && managed.iiqApiKey.trim().length > 0 ? managed.iiqApiKey : null,
+      ...composed,
+      apiBaseUrl: managed?.iiqApiBaseUrl ?? baseUrlFromTenant ?? composed.apiBaseUrl,
+      telemetryEndpoint: managed?.iiqTelemetryEndpoint ?? composed.telemetryEndpoint,
+      intervalMinutes: Number.isFinite(intervalMinutes) && intervalMinutes > 0 ? intervalMinutes : composed.intervalMinutes,
+      timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : composed.timeoutMs,
+      apiKey:
+        typeof managed?.iiqApiKey === 'string' && managed.iiqApiKey.trim().length > 0
+          ? managed.iiqApiKey
+          : composed.apiKey,
       staticBearerToken:
         typeof managed?.iiqServiceToken === 'string' && managed.iiqServiceToken.trim().length > 0
           ? managed.iiqServiceToken
-          : null,
+          : composed.staticBearerToken,
       tokenLifetimeMinutes:
         Number.isFinite(tokenLifetimeMinutes) && tokenLifetimeMinutes > 0
           ? tokenLifetimeMinutes
-          : defaults.tokenLifetimeMinutes,
+          : composed.tokenLifetimeMinutes,
       oauthScopes,
     };
   } catch (error) {
-    console.warn('Unable to read managed telemetry settings; falling back to defaults:', error);
-    return defaults;
+    console.warn('Unable to read managed telemetry settings; falling back to saved configuration:', error);
+    return composed;
   }
 }
 
@@ -655,5 +701,42 @@ export function initializeTelemetryPipeline() {
     .catch((error) => {
       console.error('Initial telemetry push failed:', error);
       scheduleNextTelemetryPush({ retry: true });
+    });
+}
+
+function clearTelemetryAlarm() {
+  return new Promise((resolve) => {
+    if (!chrome?.alarms?.clear) {
+      resolve(false);
+      return;
+    }
+
+    try {
+      chrome.alarms.clear(TELEMETRY_ALARM_NAME, (cleared) => {
+        resolve(Boolean(cleared));
+      });
+    } catch (error) {
+      console.warn('Unable to clear telemetry alarm:', error);
+      resolve(false);
+    }
+  });
+}
+
+export async function refreshTelemetryConfiguration() {
+  cachedIdentityToken = null;
+  cachedIdentityTokenExpiry = 0;
+  cachedIdentityTokenSource = null;
+
+  await clearTelemetryAlarm();
+
+  return pushDeviceTelemetry()
+    .then((responseSummary) => {
+      scheduleNextTelemetryPush({ recommendedDelayMinutes: responseSummary?.recommendedDelayMinutes });
+      return responseSummary;
+    })
+    .catch((error) => {
+      console.error('Telemetry push failed after configuration refresh:', error);
+      scheduleNextTelemetryPush({ retry: true });
+      throw error;
     });
 }

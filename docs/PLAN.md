@@ -32,6 +32,26 @@ Create a ChromeOS extension that keeps managed Chromebooks in sync with incident
 - **Options Page**: Admin configuration, authentication status, and log export tools.
 - **Storage**: Chrome `storage.managed` for admin-controlled defaults, `storage.sync` for per-user overrides, and `storage.local` for transient cache.
 
+## Settings Schema
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `schemaVersion` | `number` | Incremented when the structure of the settings object changes. Current value: `1`. |
+| `tenantUrl` | `string` | HTTPS base URL for the district's incidentIQ tenant (e.g., `https://district.incidentiq.com`). Used to derive API endpoints. |
+| `authMethod` | `'apiKey' \| 'oauth'` | Determines which credential fields are authoritative for API access. |
+| `apiKey` | `string` | Scoped incidentIQ API key. Required when `authMethod` is `apiKey`; ignored otherwise. Stored trimmed with no surrounding whitespace. |
+| `oauthClientId` | `string` | OAuth client identifier supplied by Google Workspace administrators. Required when `authMethod` is `oauth`; ignored when using API keys. |
+| `syncIntervalMinutes` | `number` | Positive integer describing how often telemetry is pushed. Must be between 5 and 720 minutes. |
+| `updatedAt` | `string` | ISO 8601 timestamp of the most recent successful save operation. Used to display recency in the options UI. |
+| `lastMigratedFrom` | `number \| null` | When migrations run, captures the prior schema version to aid debugging. Null when no migration occurred. |
+
+### Storage Behaviour
+
+- Settings persist to `chrome.storage.managed` when the API exposes write access; otherwise they fall back to `chrome.storage.sync`.
+- Reads always consult managed storage first so that enterprise policies override user-provided values when present.
+- Migration helpers normalize legacy keys (e.g., `tenantSubdomain`, `syncInterval`) to the new schema, backfilling defaults for missing fields while recording the originating schema version.
+- All settings write operations stamp a fresh `updatedAt` unless a migration explicitly preserves an existing timestamp.
+
 ## Open Questions
 - Which iiQ API endpoints support device metadata updates and ticket prefilling?
 - What authentication mechanism (API key, OAuth client, service account) is supported in managed ChromeOS contexts?
