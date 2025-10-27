@@ -1,4 +1,5 @@
 import { handleTelemetryAlarms, initializeTelemetryPipeline } from './telemetry.js';
+import { registerPopupMessageHandlers } from './popup-api.js';
 
 console.log('iiQ Chromebook Companion background service worker initialized.');
 
@@ -13,3 +14,4 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.alarms.onAlarm.addListener(handleTelemetryAlarms);
 
 initializeTelemetryPipeline();
+registerPopupMessageHandlers();
